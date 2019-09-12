@@ -1,0 +1,40 @@
+PLATFORM: linux
+
+image_resource:
+  type: docker-image
+  source:
+    repository: golang
+    tag: '1.12.7'
+
+inputs:
+- name: gpupgrade_src
+  path: go/src/github.com/greenplum-db/gpupgrade
+- name: go_dep_cache
+  path: go/pkg/dep
+- name: go_bin
+  path: go/bin
+
+params:
+  DEPCACHEAGE: 24h
+
+run:
+  path: bash
+  args:
+  - -c
+  - |
+    set -ex
+
+    ls -al go/pkg/dep/*
+
+    export GOPATH="$PWD/go"
+    export PATH="$PWD/go/bin:$PATH"
+
+    make -C go/src/github.com/greenplum-db/gpupgrade
+
+    for file in gpupgrade gpupgrade_agent gpupgrade_hub; do
+      cp go/src/github.com/greenplum-db/gpupgrade/$file go/bin
+    done
+
+outputs:
+- name: go_bin
+  path: go/bin

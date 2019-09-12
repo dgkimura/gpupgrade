@@ -23,13 +23,17 @@ MAC_POSTFIX := .darwin.$(BRANCH)
 
 GOFLAGS := -gcflags="all=-N -l"
 
-.PHONY: depend depend-dev
-depend:
-		go get github.com/onsi/ginkgo/ginkgo
-		go get github.com/golang/dep/cmd/dep
+.PHONY: dep gingko depend depend-dev
+dep:
+		curl -s https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
 		dep ensure
 
-depend-dev: depend
+gingko:
+		go get -v github.com/onsi/ginkgo/ginkgo
+
+depend: dep gingko
+
+depend-dev:
 		go install ./vendor/github.com/golang/protobuf/protoc-gen-go
 		go install ./vendor/github.com/golang/mock/mockgen
 		go get golang.org/x/tools/cmd/goimports

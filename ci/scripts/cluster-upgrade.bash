@@ -11,16 +11,13 @@ mapfile -t hosts < cluster_env_files/hostfile_all
 # Copy over the SQL dump we pulled from master.
 scp sqldump/dump.sql.xz gpadmin@mdw:/tmp/
 
-# Build gpupgrade.
-export GOPATH=$PWD/go
-export PATH=$GOPATH/bin:$PATH
+cp -v gpupgrade-binaries/gpupgrade*/gpupgrade* go/src/github.com/greenplum-db/gpupgrade
 
-cd $GOPATH/src/github.com/greenplum-db/gpupgrade
-make depend
-make
+cd go/src/github.com/greenplum-db/gpupgrade
 
 # Install the artifacts onto the cluster machines.
 artifacts='gpupgrade gpupgrade_hub gpupgrade_agent'
+chmod a+x $artifacts
 for host in "${hosts[@]}"; do
     scp $artifacts "gpadmin@$host:/usr/local/greenplum-db-devel/bin/"
 done

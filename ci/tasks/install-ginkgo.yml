@@ -1,0 +1,17 @@
+PLATFORM: linux
+
+image_resource:
+  type: docker-image
+  source:
+    repository: golang
+    tag: "1.12.7"
+
+inputs:
+- name: gpupgrade_src
+  path: go/src/github.com/greenplum-db/gpupgrade
+
+run:
+  path: go/src/github.com/greenplum-db/gpupgrade/ci/scripts/install-ginkgo.bash
+
+outputs:
+- name: go/bin

@@ -1,0 +1,764 @@
+---
+## ======================================================================
+## Set pipeline with
+##
+##   fly --target=gpdb-releng \
+##        set-pipeline \
+##        --pipeline=cm-go-dep-cache \
+##        --config=$HOME/workspace/gpupgrade/ci/go-dep-cache-pipeline.yml \
+##        --load-vars-from=$HOME/workspace/gp-continuous-integration/secrets/gpupgrade.dev.yml \
+##        --load-vars-from=$HOME/workspace/gp-continuous-integration/secrets/gpdb-build-artifacts.dev.yml \
+##        --load-vars-from=$HOME/workspace/gp-continuous-integration/secrets/gpdb_common-ci-secrets.yml \
+##        --load-vars-from=$HOME/workspace/gp-continuous-integration/secrets/ccp_ci_secrets_releng.yml
+##
+##   fly --target=gpdb-cm \
+##        set-pipeline \
+##        --pipeline=cm-go-dep-cache \
+##        --config=$HOME/workspace/gpupgrade/ci/go-dep-cache-pipeline.yml \
+##        --load-vars-from=$HOME/workspace/gp-continuous-integration/secrets/gpupgrade.dev.yml \
+##        --load-vars-from=$HOME/workspace/gp-continuous-integration/secrets/gpdb-build-artifacts.dev.yml \
+##        --load-vars-from=$HOME/workspace/gp-continuous-integration/secrets/gpdb_common-ci-secrets.yml \
+##        --load-vars-from=$HOME/workspace/gp-continuous-integration/secrets/ccp_ci_secrets_cm.yml
+##
+## ======================================================================
+
+## ======================================================================
+groups:
+## ======================================================================
+
+- name: all
+  jobs:
+  - Go Dep
+  - Go Ginkgo
+  - Initialize GP demo datadirs - singlenode
+  - Go gpupgrade binary
+  - noinstall-tests
+  - install-tests
+  - 6-to-6
+
+- name: dependencies
+  jobs:
+  - Go Dep
+  - Go Ginkgo
+  - Initialize GP demo datadirs - singlenode
+
+- name: building
+  jobs:
+  - Go gpupgrade binary
+
+- name: testing
+  jobs:
+  - noinstall-tests
+  - install-tests
+  - 6-to-6
+
+## ======================================================================
+anchors:
+## ======================================================================
+
+- &alert_failed_aborted
+  on_failure:
+    put: Alert
+    params:
+      alert_type: failed
+  on_abort:
+    put: Alert
+    params:
+      alert_type: aborted
+
+- &alert_success_failed_aborted
+  on_failure:
+    put: Alert
+    params:
+      alert_type: failed
+  on_abort:
+    put: Alert
+    params:
+      alert_type: aborted
+  on_success:
+      put: Alert
+      params:
+        alert_type: success
+
+- &ccp_default_params
+  action: create
+  delete_on_failure: true
+  generate_random_name: true
+  terraform_source: ccp_src/google/
+  plugin_dir: ../../terraform.d/plugin-cache/linux_amd64
+
+- &ccp_gen_cluster_default_params
+  AWS_ACCESS_KEY_ID: {{tf-machine-access-key-id}}
+  AWS_SECRET_ACCESS_KEY: {{tf-machine-secret-access-key}}
+  AWS_DEFAULT_REGION: {{aws-region}}
+  BUCKET_PATH: clusters-google/
+  BUCKET_NAME: {{tf-bucket-name}}
+  CLOUD_PROVIDER: google
+
+- &ccp_destroy
+  put: terraform
+  params:
+    action: destroy
+    env_name_file: terraform/name
+    terraform_source: ccp_src/google/
+    plugin_dir: ../../terraform.d/plugin-cache/linux_amd64
+    vars:
+      aws_instance-node-instance_type: t2.micro #t2.micro is ignored in destroy, but aws_instance-node-instance_type is required.
+      aws_ebs_volume_type: standard
+  get_params:
+    action: destroy
+
+- &set_failed
+  do:
+  - task: on_failure_set_failed
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: pivotaldata/ccp
+          tag: "7"
+      inputs:
+        - name: ccp_src
+        - name: terraform
+      run:
+        path: 'ccp_src/google/ccp_failed_test.sh'
+      params:
+        GOOGLE_CREDENTIALS: {{google-service-account-key}}
+        GOOGLE_PROJECT_ID: {{google-project-id}}
+        GOOGLE_ZONE: {{google-zone}}
+        GOOGLE_SERVICE_ACCOUNT: {{google-service-account}}
+        AWS_ACCESS_KEY_ID: {{tf-machine-access-key-id}}
+        AWS_SECRET_ACCESS_KEY: {{tf-machine-secret-access-key}}
+        AWS_DEFAULT_REGION: {{tf-machine-region}}
+        BUCKET_PATH: clusters-google/
+        BUCKET_NAME: {{tf-bucket-name}}
+
+## ======================================================================
+resource_types:
+## ======================================================================
+
+- name: slack-alert
+  type: docker-image
+  source:
+    repository: arbourd/concourse-slack-alert-resource
+
+- name: gcs
+  type: docker-image
+  source:
+    repository: frodenas/gcs-resource
+
+- name: terraform
+  type: docker-image
+  source:
+    repository: ljfranklin/terraform-resource
+    tag: 0.11.14
+
+## ======================================================================
+resources:
+## ======================================================================
+
+- name: gpupgrade_src
+  icon: git
+  type: git
+  source:
+    uri: https://github.com/greenplum-db/gpupgrade
+    branch: concourse-cache-test
+
+- name: Go Dep binary
+  type: gcs
+  icon: google-drive
+  source:
+    bucket: ((gcs-bucket-intermediates))
+    json_key: ((concourse-gcs-resources-service-account-key))
+    versioned_file: gpupgrade/dep
+
+- name: Go Dep cache
+  type: gcs
+  icon: google-drive
+  source:
+    bucket: ((gcs-bucket-intermediates))
+    json_key: ((concourse-gcs-resources-service-account-key))
+    versioned_file: gpupgrade/go-dep-cache.tgz
+
+- name: GitHub Ginkgo release
+  type: github-release
+  icon: git
+  check_every: 8h
+  source:
+    owner: onsi
+    repository: ginkgo
+
+- name: Go Ginkgo binary
+  type: gcs
+  icon: google-drive
+  source:
+    bucket: ((gcs-bucket-intermediates))
+    json_key: ((concourse-gcs-resources-service-account-key))
+    versioned_file: gpupgrade/ginkgo
+
+- name: Go gpupgrade binary
+  type: gcs
+  icon: google-drive
+  source:
+    bucket: ((gcs-bucket-intermediates))
+    json_key: ((concourse-gcs-resources-service-account-key))
+    versioned_file: gpupgrade/gpupgrade
+
+- name: Go gpupgrade_hub binary
+  type: gcs
+  icon: google-drive
+  source:
+    bucket: ((gcs-bucket-intermediates))
+    json_key: ((concourse-gcs-resources-service-account-key))
+    versioned_file: gpupgrade/gpupgrade_hub
+
+- name: Go gpupgrade_agent binary
+  type: gcs
+  icon: google-drive
+  source:
+    bucket: ((gcs-bucket-intermediates))
+    json_key: ((concourse-gcs-resources-service-account-key))
+    versioned_file: gpupgrade/gpupgrade_agent
+
+- name: bats
+  type: git
+  icon: git
+  source:
+    uri: https://github.com/bats-core/bats-core
+    branch: master
+    tag_filter: v1.*
+
+- name: Alert
+  type: slack-alert
+  icon: message
+  source:
+    url: https://hooks.slack.com/services/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
+
+- name: gpdb_src
+  type: git
+  icon: git
+  source:
+    uri: https://github.com/greenplum-db/gpdb
+    branch: master
+
+- name: bin_gpdb_centos6
+  type: gcs
+  icon: google-drive
+  source:
+    bucket: pivotal-gpdb-concourse-resources-prod
+##    bucket: {{gcs-bucket}}
+    json_key: {{concourse-gcs-resources-service-account-key}}
+    regexp: server/published/gpdb6/server-rc-(.*)-rhel6_x86_64.debug.tar.gz
+
+- name: gpdemo-datadirs
+  type: gcs
+  icon: google-drive
+  source:
+    bucket: ((gcs-bucket-intermediates))
+    json_key: ((concourse-gcs-resources-service-account-key))
+    versioned_file: gpupgrade/gpdemo-datadirs.tgz
+
+- name: ccp_src
+  type: git
+  icon: git
+  source:
+    branch: {{ccp-git-branch}}
+    private_key: {{ccp-git-key}}
+    uri: {{ccp-git-remote}}
+
+- name: terraform.d
+  type: s3
+  icon: amazon
+  source:
+    bucket: ccp-terraform-provider-plugins
+    versioned_file: plugin-cache.tgz
+    access_key_id: {{tf-machine-access-key-id}}
+    secret_access_key: {{tf-machine-secret-access-key}}
+    region_name: {{aws-region}}
+
+- name: terraform
+  type: terraform
+  icon: alpha-t-box
+  source:
+    env:
+      AWS_ACCESS_KEY_ID: {{tf-machine-access-key-id}}
+      AWS_SECRET_ACCESS_KEY: {{tf-machine-secret-access-key}}
+      GOOGLE_CREDENTIALS: {{google-service-account-key}}
+    vars:
+      project_id: {{google-project-id}}
+    storage:
+      access_key_id: {{tf-machine-access-key-id}}
+      secret_access_key: {{tf-machine-secret-access-key}}
+      region_name: {{aws-region}}
+      # This is not parameterized, on purpose. All tfstates will go to this spot,
+      # and different teams will place there clusters' tfstate files under different paths
+      bucket: gpdb5-pipeline-dynamic-terraform
+      bucket_path: clusters-google/
+
+- name: icw_gporca_centos6_dump
+  type: s3
+  icon: amazon
+  source:
+    access_key_id: {{bucket-access-key-id}}
+    bucket: {{test-data-bucket-name}}
+    secret_access_key: {{bucket-secret-access-key}}
+    region_name: {{aws-region}}
+    versioned_file: gpdb6/icw_gporca_centos6/dump.sql.xz
+
+## ======================================================================
+jobs:
+## ======================================================================
+
+- name: Go Dep
+  plan:
+  - get: gpupgrade_src
+    trigger: true
+  - task: Install Go Dep and populate cache
+    attempts: 5
+    file: gpupgrade_src/ci/tasks/gen-go-dep-cache.yml
+    <<: *alert_failed_aborted
+  - aggregate:
+    - put: Go Dep binary
+      params:
+        file: go/bin/dep
+        skip_download: true
+    - put: Go Dep cache
+      params:
+        file: go/pkg/go-dep-cache.tgz
+        skip_download: true
+
+## ----------------------------------------------------------------------
+
+- name: Go Ginkgo
+  plan:
+  - get: GitHub Ginkgo release
+    trigger: true
+  - get: gpupgrade_src
+  - task: Install Ginkgo
+    attempts: 5
+    file: gpupgrade_src/ci/tasks/install-ginkgo.yml
+    <<: *alert_failed_aborted
+  - put: Go Ginkgo binary
+    params:
+      file: go/bin/ginkgo
+      skip_download: true
+
+## ----------------------------------------------------------------------
+
+- name: Go gpupgrade binary
+  plan:
+  - aggregate:
+    - get: Go Dep binary
+      passed: [Go Dep]
+    - get: Go Dep cache
+      passed: [Go Dep]
+      params: {unpack: true}
+    - get: Go Ginkgo binary
+      passed: [Go Ginkgo]
+    - get: gpupgrade_src
+      passed: [Go Dep]
+      trigger: true
+  - task: Build gpupgrade
+    config:
+      PLATFORM: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: golang
+          tag: '1.12.7'
+      inputs:
+        - name: gpupgrade_src
+          path: go/src/github.com/greenplum-db/gpupgrade
+        - name: Go Dep cache
+          path: go/pkg
+        - name: Go Dep binary
+          path: go/bin
+      params:
+        DEPCACHEAGE: 24h
+      run:
+        path: bash
+        args:
+          - -c
+          - |
+            set -ex
+
+            chmod a+x go/bin/dep
+            ls -al go/bin
+            ls -al go/pkg/dep/*
+
+            export GOPATH="$PWD/go"
+            export PATH="$PWD/go/bin:$PATH"
+
+            make -C go/src/github.com/greenplum-db/gpupgrade
+
+            for file in gpupgrade gpupgrade_agent gpupgrade_hub; do
+              cp -v go/src/github.com/greenplum-db/gpupgrade/$file gpupgrade_go_binaries
+            done
+      outputs:
+        - name: gpupgrade_go_binaries
+    <<: *alert_failed_aborted
+  - aggregate:
+    - put: Go gpupgrade binary
+      params:
+        file: gpupgrade_go_binaries/gpupgrade
+        skip_download: true
+    - put: Go gpupgrade_hub binary
+      params:
+        file: gpupgrade_go_binaries/gpupgrade_hub
+        skip_download: true
+    - put: Go gpupgrade_agent binary
+      params:
+        file: gpupgrade_go_binaries/gpupgrade_agent
+        skip_download: true
+
+## ----------------------------------------------------------------------
+
+- name: noinstall-tests
+  plan:
+  - aggregate:
+    - get: Go gpupgrade binary
+      passed: [Go gpupgrade binary]
+    - get: Go gpupgrade_hub binary
+      passed: [Go gpupgrade binary]
+    - get: Go gpupgrade_agent binary
+      passed: [Go gpupgrade binary]
+    - get: Go Dep binary
+      passed: [Go gpupgrade binary]
+    - get: Go Dep cache
+      passed: [Go gpupgrade binary]
+      params: {unpack: true}
+    - get: Go Ginkgo binary
+      passed: [Go gpupgrade binary]
+    - get: gpupgrade_src
+      passed: [Go gpupgrade binary]
+      trigger: true
+    - get: bats
+  - task: noinstall-tests
+    config:
+      PLATFORM: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: golang
+          tag: '1.12.7'
+      inputs:
+        - name: gpupgrade_src
+          path: go/src/github.com/greenplum-db/gpupgrade
+        - name: Go gpupgrade binary
+          path: gpupgrade-binaries/gpupgrade
+        - name: Go gpupgrade_hub binary
+          path: gpupgrade-binaries/gpupgrade_hub
+        - name: Go gpupgrade_agent binary
+          path: gpupgrade-binaries/gpupgrade_agent
+        - name: Go Dep cache
+          path: go/pkg
+        - name: Go Dep binary
+          path: Dep
+        - name: Go Ginkgo binary
+          path: Ginkgo
+        - name: bats
+      params:
+        DEPCACHEAGE: 24h
+      run:
+        path: bash
+        args:
+
+      run:
+        path: bash
+        args:
+          - -c
+          - |
+            set -ex
+
+            export GOPATH=$PWD/go
+            export PATH=$GOPATH/bin:$PATH
+
+            mkdir -p go/bin
+
+            export TERM=linux
+            ./bats/install.sh /usr/local
+
+            cp -v gpupgrade-binaries/gpupgrade*/gpupgrade* go/bin
+            cp -v Dep/dep go/bin
+            cp -v Ginkgo/ginkgo go/bin
+            chmod a+x go/bin/*
+
+            ls -al go/bin
+
+            cd go/src/github.com/greenplum-db/gpupgrade
+            dep ensure
+            make check --keep-going
+
+    <<: *alert_success_failed_aborted
+
+## ----------------------------------------------------------------------
+
+- name: Initialize GP demo datadirs - singlenode
+  plan:
+  - aggregate:
+    - get: gpdb_src
+    - get: bin_gpdb
+      resource: bin_gpdb_centos6
+      trigger: true
+  - task: gpdemo
+    privileged: true
+    config:
+      PLATFORM: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: pivotaldata/centos-gpdb-dev
+          tag: '6-gcc6.2-llvm3.7'
+      inputs:
+        - name: gpdb_src
+        - name: bin_gpdb
+      run:
+        path: bash
+        args:
+
+      run:
+        path: bash
+        args:
+          - -c
+          - |
+            #!/bin/bash
+
+            set -ex
+
+            hostname mdw
+            cat /etc/hosts | sed -e "2s|\(.*\)|\1 mdw|" > /etc/hosts.new
+            cat /etc/hosts.new
+            cp /etc/hosts.new /etc/hosts
+
+            source gpdb_src/concourse/scripts/common.bash
+            mkdir -p /usr/local/greenplum-db-devel
+            tar -xzf bin_gpdb/*.tar.gz -C /usr/local/greenplum-db-devel
+
+            time ./gpdb_src/concourse/scripts/setup_gpadmin_user.bash "centos"
+            time make_cluster
+
+            su gpadmin <<'EOF'
+            set -ex
+
+            source /usr/local/greenplum-db-devel/greenplum_path.sh
+            source gpdb_src/gpAux/gpdemo/gpdemo-env.sh
+
+            gpstop -a
+            EOF
+
+            tar zcf gpdemo-datadirs/gpdemo-datadirs.tgz -C gpdb_src/gpAux/gpdemo datadirs gpdemo-env.sh
+
+      outputs:
+        - name: gpdemo-datadirs
+    <<: *alert_failed_aborted
+  - put: gpdemo-datadirs
+    params:
+      file: gpdemo-datadirs/gpdemo-datadirs.tgz
+      skip_download: true
+
+## ----------------------------------------------------------------------
+
+- name: install-tests
+  plan:
+  - aggregate:
+    - get: Go gpupgrade binary
+      passed: [Go gpupgrade binary]
+    - get: Go gpupgrade_hub binary
+      passed: [Go gpupgrade binary]
+    - get: Go gpupgrade_agent binary
+      passed: [Go gpupgrade binary]
+    - get: Go Dep binary
+      passed: [Go gpupgrade binary]
+    - get: Go Dep cache
+      passed: [Go gpupgrade binary]
+      params: {unpack: true}
+    - get: Go Ginkgo binary
+      passed: [Go gpupgrade binary]
+    - get: gpupgrade_src
+      passed: [Go gpupgrade binary]
+      trigger: true
+    - get: gpdb_src
+      passed: [Initialize GP demo datadirs - singlenode]
+    - get: bin_gpdb
+      resource: bin_gpdb_centos6
+      passed: [Initialize GP demo datadirs - singlenode]
+    - get: gpdemo-datadirs
+      passed: [Initialize GP demo datadirs - singlenode]
+      params: {unpack: true}
+    - get: bats
+  - task: install-tests
+    privileged: true
+    config:
+      PLATFORM: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: pivotaldata/centos-gpdb-dev
+          tag: '6-gcc6.2-llvm3.7'
+      inputs:
+        - name: gpupgrade_src
+          path: go/src/github.com/greenplum-db/gpupgrade
+        - name: gpdb_src
+        - name: bin_gpdb
+        - name: gpdemo-datadirs
+        - name: Go gpupgrade binary
+          path: gpupgrade-binaries/gpupgrade
+        - name: Go gpupgrade_hub binary
+          path: gpupgrade-binaries/gpupgrade_hub
+        - name: Go gpupgrade_agent binary
+          path: gpupgrade-binaries/gpupgrade_agent
+        - name: Go Dep cache
+          path: go/pkg
+        - name: Go Dep binary
+          path: Dep
+        - name: Go Ginkgo binary
+          path: Ginkgo
+        - name: bats
+      params:
+        DEPCACHEAGE: 24h
+      run:
+        path: bash
+        args:
+
+      run:
+        path: bash
+        args:
+          - -c
+          - |
+            #!/bin/bash
+
+            set -ex
+
+            hostname mdw
+            cat /etc/hosts | sed -e "2s|\(.*\)|\1 mdw|" > /etc/hosts.new
+            cat /etc/hosts.new
+            cp /etc/hosts.new /etc/hosts
+
+            # Install BATS
+            ./bats/install.sh /usr/local
+
+            source gpdb_src/concourse/scripts/common.bash
+            mkdir -p /usr/local/greenplum-db-devel
+            tar -xzf bin_gpdb/*.tar.gz -C /usr/local/greenplum-db-devel
+
+            tar -xzf gpdemo-datadirs/*.tgz -C gpdb_src/gpAux/gpdemo
+            source gpdb_src/gpAux/gpdemo/gpdemo-env.sh
+
+            time ./gpdb_src/concourse/scripts/setup_gpadmin_user.bash "centos"
+
+            time chown -R gpadmin:gpadmin gpdb_src/gpAux/gpdemo
+            time chown -R gpadmin:gpadmin go
+
+            ln -s ${PWD} $(echo $MASTER_DATA_DIRECTORY | sed 's|\(/tmp/build/.*\)/gpdb_src/.*|\1|')
+
+            su gpadmin <<'EOF'
+            set -ex
+
+            export GOPATH=$PWD/go
+            export PATH=$GOPATH/bin:$PATH
+            source /usr/local/greenplum-db-devel/greenplum_path.sh
+
+            echo "export MASTER_DATA_DIRECTORY=${PWD}/gpdb_src/gpAux/gpdemo/datadirs/qddir/demoDataDir-1" >> gpdb_src/gpAux/gpdemo/gpdemo-env.sh
+            source gpdb_src/gpAux/gpdemo/gpdemo-env.sh
+
+            find ${PWD}/gpdb_src/gpAux/gpdemo/datadirs -type d -exec chmod 700 {} \;
+            gpstart -a
+
+            mkdir -p go/bin
+            cp -v gpupgrade-binaries/gpupgrade*/gpupgrade* go/bin
+            cp -v Dep/dep go/bin
+            cp -v Ginkgo/ginkgo go/bin
+            chmod a+x go/bin/*
+
+            cp -v gpupgrade-binaries/gpupgrade*/gpupgrade* ${GPHOME}/bin
+            chmod a+x ${GPHOME}/bin/gpupgrade*
+
+            cd $GOPATH/src/github.com/greenplum-db/gpupgrade
+            dep ensure
+            make check --keep-going
+
+            # Note that installcheck is currently destructive.
+            # make install
+            make installcheck
+            EOF
+
+    <<: *alert_success_failed_aborted
+
+## ----------------------------------------------------------------------
+
+- name: 6-to-6
+  plan:
+  - aggregate:
+    - get: Go gpupgrade binary
+      passed: [Go gpupgrade binary]
+    - get: Go gpupgrade_hub binary
+      passed: [Go gpupgrade binary]
+    - get: Go gpupgrade_agent binary
+      passed: [Go gpupgrade binary]
+    - get: gpupgrade_src
+      passed: [Go gpupgrade binary]
+      trigger: true
+    - get: gpdb_src
+      passed: [Initialize GP demo datadirs - singlenode]
+    - get: bin_gpdb
+      resource: bin_gpdb_centos6
+      trigger: true
+      passed: [Initialize GP demo datadirs - singlenode]
+    - get: ccp_src
+    - get: terraform.d
+      params:
+        unpack: true
+    # FIXME: this is not guaranteed to be the same dump generated by the above
+    # binary...
+    - get: icw_gporca_centos6_dump
+  - put: terraform
+    params:
+      <<: *ccp_default_params
+      vars:
+        instance_type: n1-standard-2
+        number_of_nodes: 4
+        PLATFORM: centos6
+  - task: gen_cluster
+    file: ccp_src/ci/tasks/gen_cluster.yml
+    params:
+      <<: *ccp_gen_cluster_default_params
+      PLATFORM: centos6
+    input_mapping:
+      gpdb_binary: bin_gpdb
+  - task: gpinitsystem
+    file: ccp_src/ci/tasks/gpinitsystem.yml
+
+  - task: cluster-upgrade
+    config:
+      PLATFORM: linux
+      image_resource:
+        type: docker-image
+        source:
+          repository: pivotaldata/centos-gpdb-dev
+          tag: '6-gcc6.2-llvm3.7'
+      inputs:
+        - name: terraform
+        - name: ccp_src
+        - name: cluster_env_files
+        - name: gpupgrade_src
+          path: go/src/github.com/greenplum-db/gpupgrade
+        - name: gpdb_src
+        - name: bin_gpdb
+        - name: sqldump
+        - name: Go gpupgrade binary
+          path: gpupgrade-binaries/gpupgrade
+        - name: Go gpupgrade_hub binary
+          path: gpupgrade-binaries/gpupgrade_hub
+        - name: Go gpupgrade_agent binary
+          path: gpupgrade-binaries/gpupgrade_agent
+      run:
+        path: go/src/github.com/greenplum-db/gpupgrade/ci/scripts/cluster-upgrade.bash
+    input_mapping: {sqldump: icw_gporca_centos6_dump}
+    <<: *alert_success_failed_aborted
+  ensure:
+    <<: *set_failed
+  on_success:
+    <<: *ccp_destroy
+
+## ----------------------------------------------------------------------
