@@ -14,7 +14,7 @@ fi
 export GOPATH="$PWD/go"
 export PATH="$PWD/go/bin:$PATH"
 
-make -C go/src/github.com/greenplum-db/gpupgrade dep
+time make -C go/src/github.com/greenplum-db/gpupgrade dep
 
 if [ -d go/pkg/dep/sources ]; then
     echo "Concourse cache directory: go/pkg/dep/sources"
